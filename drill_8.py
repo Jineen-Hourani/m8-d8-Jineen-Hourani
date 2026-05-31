@@ -9,7 +9,10 @@ into TalentLMS → Module 8 → Core Skills Drill.
 
 import numpy as np
 import weaviate
+from sentence_transformers import SentenceTransformer
 
+# load all-MiniLM-L6-v2 (consider loading once at module level for speed)
+_model = SentenceTransformer("all-MiniLM-L6-v2")
 
 def embed_text(text: str) -> np.ndarray:
     """Return a 384-dim float32 numpy vector for the input string.
@@ -21,10 +24,9 @@ def embed_text(text: str) -> np.ndarray:
         model = SentenceTransformer("all-MiniLM-L6-v2")
         v = model.encode(text, convert_to_numpy=True).astype(np.float32)
     """
-    # TODO: load all-MiniLM-L6-v2 (consider loading once at module level for speed)
-    # TODO: encode the text and return as float32 numpy array of shape (384,)
-    raise NotImplementedError("embed_text is not yet implemented")
-
+    # encode the text and return as float32 numpy array of shape (384,)
+    vector = _model.encode(text, convert_to_numpy=True).astype(np.float32)
+    return vector
 
 def weaviate_ready(url: str) -> bool:
     """Return True if Weaviate at `url` is reachable and ready, else False.
@@ -32,9 +34,12 @@ def weaviate_ready(url: str) -> bool:
     Wrap in try/except so a non-running Weaviate returns False rather than
     raising a connection error.
     """
-    # TODO: try weaviate.Client(url).is_ready(); return False on any exception
-    raise NotImplementedError("weaviate_ready is not yet implemented")
-
+    # try weaviate.Client(url).is_ready(); return False on any exception
+    try:
+        client = weaviate.Client(url)
+        return client.is_ready()
+    except Exception:
+        return False
 
 def ingest_corpus(client: weaviate.Client, class_name: str, items: list[dict]) -> int:
     """Ingest items into the named class. Return the count of ingested objects.
@@ -49,8 +54,37 @@ def ingest_corpus(client: weaviate.Client, class_name: str, items: list[dict]) -
     Verify the count via:
       client.query.aggregate(class_name).with_meta_count().do()
     """
-    # TODO: if class_name not in client.schema, create it (vectorizer "none")
-    # TODO: batch-add each item with vector=item["vector"]
-    # TODO: flush the batch
-    # TODO: query the aggregate count and return it
-    raise NotImplementedError("ingest_corpus is not yet implemented")
+    # if class_name not in client.schema, create it (vectorizer "none")
+    existing = [c["class"] for c in client.schema.get()["classes"]]
+    if class_name not in existing:
+        client.schema.create_class({
+            "class": class_name,
+            "vectorizer": "none",
+            "vectorIndexConfig": {"distance": "cosine"},
+            "properties": [
+                {
+                    "name": "title",
+                    "dataType": ["text"],
+                },
+                {
+                    "name": "text",
+                    "dataType": ["text"],
+                    "indexSearchable": True,   
+                    "tokenization": "word",
+                },
+            ],
+        })
+    # batch-add each item with vector=item["vector"]
+    with client.batch as batch:
+        batch.batch_size = 100
+        for item in items:
+            batch.add_data_object(
+                data_object={"title": item["title"], "text": item["text"]},
+                class_name=class_name,
+                vector=item["vector"],   
+            )
+    # flush the batch
+    result = client.query.aggregate(class_name).with_meta_count().do()
+    # query the aggregate count and return it
+    count = result["data"]["Aggregate"][class_name][0]["meta"]["count"]
+    return int(count)
